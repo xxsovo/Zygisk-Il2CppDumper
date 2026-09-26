@@ -4,6 +4,8 @@
 #include <dlfcn.h>
 #include <link.h>
 #include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <string>
 #include <string.h>
@@ -28,7 +30,8 @@ std::vector<MemoryRegion> ProcessRuntimeUtility::GetProcessMemoryLayout() {
 
   while (!feof(fp)) {
     char line_buffer[LINE_MAX + 1];
-    fgets(line_buffer, LINE_MAX, fp);
+    if (!fgets(line_buffer, LINE_MAX, fp))
+      break;
 
     // ignore the rest of characters
     if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX] != '\n') {
@@ -103,7 +106,8 @@ static std::vector<RuntimeModule> get_process_map_with_proc_maps() {
 
   while (!feof(fp)) {
     char line_buffer[LINE_MAX + 1];
-    fgets(line_buffer, LINE_MAX, fp);
+    if (!fgets(line_buffer, LINE_MAX, fp))
+      break;
 
     // ignore the rest of characters
     if (strlen(line_buffer) == LINE_MAX && line_buffer[LINE_MAX] != '\n') {
@@ -147,11 +151,18 @@ static std::vector<RuntimeModule> get_process_map_with_proc_maps() {
     if (strcmp(permissions, "r--p") != 0 && strcmp(permissions, "r-xp") != 0)
       continue;
 
-    // check elf magic number
-    ElfW(Ehdr) *header = (ElfW(Ehdr) *)region_start;
-    if (memcmp(header->e_ident, ELFMAG, SELFMAG) != 0) {
+    // Maps is a snapshot: the mapping may disappear before we inspect it.
+    // Read through the kernel so an unmapped address returns an error instead
+    // of causing SIGSEGV in the application's process.
+    unsigned char magic[SELFMAG] = {};
+    int memory_fd = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
+    if (memory_fd < 0)
       continue;
-    }
+    ssize_t count = pread64(memory_fd, magic, sizeof(magic),
+                            static_cast<off64_t>(region_start));
+    close(memory_fd);
+    if (count != sizeof(magic) || memcmp(magic, ELFMAG, SELFMAG) != 0)
+      continue;
 
     char *path_buffer = line_buffer + path_index;
     if (*path_buffer == 0 || *path_buffer == '\n' || *path_buffer == '[')

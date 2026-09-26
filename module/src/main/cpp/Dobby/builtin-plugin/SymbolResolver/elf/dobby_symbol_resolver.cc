@@ -42,6 +42,8 @@ static void file_mmap(const char *file_path, uint8_t **data_ptr, size_t *data_si
   // auto align
   mmap_data = (uint8_t *)mmap(0, file_size, PROT_READ | PROT_WRITE, MAP_FILE | MAP_PRIVATE, fd, 0);
   if (mmap_data == MAP_FAILED) {
+    mmap_data = NULL;
+    file_size = 0;
     ERROR_LOG("mmap failed");
     goto finished;
   }
