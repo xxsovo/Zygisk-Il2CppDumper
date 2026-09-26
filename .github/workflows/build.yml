@@ -1,26 +1,54 @@
 name: Build
 on:
   workflow_dispatch:
-      inputs:
-        package_name:
-          description: "Package name of the game:"
-          required: true
-
+    inputs:
+      package_name:
+        description: Package name of the game
+        required: true
+        default: com.tencent.KiHan
+permissions:
+  contents: read
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-java@v4
-      with:
-        distribution: temurin
-        java-version: 11
-    - run: |
-        chmod +x ./gradlew
-        sed -i 's/moduleDescription = "/moduleDescription = "(${{ github.event.inputs.package_name }}) /g' module.gradle
-        sed -i "s/com.game.packagename/${{ github.event.inputs.package_name }}/g" module/src/main/cpp/game.h
-        ./gradlew :module:assembleRelease
-    - uses: actions/upload-artifact@v4
-      with:
-        name: zygisk-il2cppdumper
-        path: out/magisk_module_release/
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android build dependencies
+        run: sdkmanager 'cmake;3.18.1' 'ndk;21.4.7075529' 'platforms;android-30' 'build-tools;30.0.3'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '11'
+      - name: Configure target package
+        env:
+          PACKAGE_NAME: ${{ inputs.package_name }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re
+          package = os.environ['PACKAGE_NAME']
+          if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+', package):
+              raise SystemExit('Invalid Android package name')
+          path = pathlib.Path('module/src/main/cpp/game.h')
+          text = re.sub(r'(#define\s+GamePackageName\s+)"[^"]*"', lambda m: m[1] + '"' + package + '"', path.read_text())
+          path.write_text(text)
+          path = pathlib.Path('module.gradle')
+          path.write_text(path.read_text().replace('moduleDescription = "', 'moduleDescription = "(' + package + ') '))
+          path = pathlib.Path('module/build.gradle')
+          text = path.read_text()
+          if 'ndkVersion' not in text:
+              text = text.replace('android {', "android {\n    ndkVersion '21.4.7075529'", 1)
+          path.write_text(text)
+          PY
+      - name: Build module ZIP
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :module:assembleRelease --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zygisk-il2cppdumper-${{ inputs.package_name }}
+          path: out/*.zip
+          if-no-files-found: error
